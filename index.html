@@ -48,14 +48,6 @@
   .engine{font-size:12px;text-align:center;color:#64748b;margin-top:8px}
   @media (orientation:landscape){.result{font-size:clamp(22px,5vw,38px)}.mic{width:82px;height:82px}}
 </style>
-
-<link rel="manifest" href="manifest.webmanifest">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="旅遊翻譯器">
-<meta name="application-name" content="旅遊翻譯器">
-<meta name="theme-color" content="#111827">
-
 </head>
 <body>
 <div class="app">
@@ -141,14 +133,191 @@ setTarget(state.target);
 function setStatus(text){$('topStatus').textContent=text}
 function setEngine(text){state.engine=text;$('engineInfo').textContent=text}
 
-// 註冊 Service Worker 確保離線可用
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js')
-      .then(reg => console.log('Service Worker 註冊成功', reg))
-      .catch(err => console.log('Service Worker 註冊失敗', err));
-  });
+async function googleTranslate(text, target){
+  if(!state.apiKey) throw new Error('NO_KEY');
+  const url='https://translation.googleapis.com/language/translate/v2?key='+encodeURIComponent(state.apiKey);
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'zh-TW',target:target.split('-')[0],format:'text'})});
+  if(!r.ok) throw new Error('GOOGLE_'+r.status);
+  const j=await r.json();
+  const out=j?.data?.translations?.[0]?.translatedText;
+  if(!out) throw new Error('GOOGLE_EMPTY');
+  return decodeHTMLEntities(out);
 }
+
+async function myMemoryTranslate(text,target){
+  const langpair='zh-TW|'+target.split('-')[0];
+  const url='https://api.mymemory.translated.net/get?q='+encodeURIComponent(text)+'&langpair='+encodeURIComponent(langpair);
+  const r=await fetch(url);
+  if(!r.ok) throw new Error('MYMEMORY_'+r.status);
+  const j=await r.json();
+  const out=j?.responseData?.translatedText;
+  if(!out || j?.responseStatus !== 200) throw new Error('MYMEMORY_EMPTY');
+  return decodeHTMLEntities(out);
+}
+
+function decodeHTMLEntities(s){
+  const el=document.createElement('textarea'); el.innerHTML=s; return el.value;
+}
+
+async function googleTranslateWithSource(text,source,target){
+  if(!state.apiKey) throw new Error('NO_GOOGLE_KEY');
+  const url='https://translation.googleapis.com/language/translate/v2?key='+encodeURIComponent(state.apiKey);
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:source,target:target,format:'text'})});
+  if(!r.ok) throw new Error('GOOGLE_'+r.status);
+  const j=await r.json();
+  const out=j?.data?.translations?.[0]?.translatedText;
+  if(!out) throw new Error('GOOGLE_EMPTY');
+  return decodeHTMLEntities(out);
+}
+
+async function myMemoryTranslateWithSource(text,source,target){
+  const langpair=source.split('-')[0]+'|'+target.split('-')[0];
+  const url='https://api.mymemory.translated.net/get?q='+encodeURIComponent(text)+'&langpair='+encodeURIComponent(langpair);
+  const r=await fetch(url);
+  if(!r.ok) throw new Error('MYMEMORY_'+r.status);
+  const j=await r.json();
+  const out=j?.responseData?.translatedText;
+  if(!out || j?.responseStatus !== 200) throw new Error('MYMEMORY_EMPTY');
+  return decodeHTMLEntities(out);
+}
+
+async function translate(text,target=state.target){
+  if(!text.trim()) return '';
+  setStatus('翻譯中…');
+  try{
+    const out=await googleTranslate(text,target);
+    setEngine('翻譯引擎：Google Cloud Translation');
+    setStatus('Google Cloud 翻譯完成');
+    return out;
+  }catch(e){
+    console.warn('Google failed:',e);
+    try{
+      const out=await myMemoryTranslate(text,target);
+      setEngine('翻譯引擎：免費備援 MyMemory');
+      setStatus('Google 不可用，已自動切換免費備援');
+      return out;
+    }catch(e2){
+      console.warn('Fallback failed:',e2);
+      setEngine('翻譯引擎：無法連線');
+      setStatus('翻譯失敗：請檢查網路');
+      throw e2;
+    }
+  }
+}
+
+function showTranslation(source, translated){
+  $('topSource').textContent=source;
+  $('topResult').textContent=translated || '—';
+}
+
+async function translateTyped(){
+  const text=$('textInput').value.trim();
+  if(!text) return;
+  const btn=$('sendBtn'); btn.disabled=true; btn.textContent='…';
+  try{
+    const out=await translate(text,state.target);
+    showTranslation(text,out);
+  }finally{
+    btn.disabled=false; btn.textContent='翻譯';
+  }
+}
+$('sendBtn').onclick=translateTyped;
+$('textInput').addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();translateTyped();}
+});
+document.querySelectorAll('.lang').forEach(b=>b.onclick=()=>{
+  setTarget(b.dataset.lang);
+  const text=$('textInput').value.trim();
+  if(text) translateTyped();
+});
+
+function initRecognition(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){
+    $('micHint').textContent='此瀏覽器不支援語音辨識，請改用 Chrome / Safari（依裝置支援情況）';
+    $('micBtn').disabled=true;
+    return null;
+  }
+  const r=new SR();
+  r.lang='zh-TW';
+  r.continuous=false;
+  r.interimResults=true;
+  r.maxAlternatives=1;
+  r.onstart=()=>{state.listening=true;$('micBtn').classList.add('listening');$('micHint').textContent='正在聽…說完放開';setStatus('正在語音辨識…')};
+  r.onresult=async e=>{
+    let finalText='', interim='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal) finalText+=t; else interim+=t;
+    }
+    $('topSource').textContent=finalText||interim;
+    if(finalText){
+      try{const out=await translate(finalText,state.target); showTranslation(finalText,out)}
+      catch(err){$('topResult').textContent='翻譯失敗'}
+    }
+  };
+  r.onerror=e=>{console.warn(e);setStatus('語音辨識：'+e.error);};
+  r.onend=()=>{state.listening=false;$('micBtn').classList.remove('listening');$('micHint').textContent='按住說話・放開後自動翻譯'};
+  return r;
+}
+state.recognition=initRecognition();
+
+function startMic(){
+  if(!state.recognition) return;
+  try{
+    state.recognition.lang='zh-TW';
+    state.recognition.start();
+  }catch(e){}
+}
+function stopMic(){
+  if(state.recognition && state.listening) state.recognition.stop();
+}
+$('micBtn').addEventListener('pointerdown',e=>{e.preventDefault();startMic()});
+['pointerup','pointercancel','pointerleave'].forEach(ev=>$('micBtn').addEventListener(ev,e=>{e.preventDefault();stopMic()}));
+
+function clearAll(){
+  $('topResult').textContent='按住麥克風說話';
+  $('topSource').textContent='';
+  $('textInput').value='';
+  setStatus('翻譯引擎：待機');
+}
+$('clearBtnTop').onclick=clearAll;
+$('clearBtnBottom').onclick=clearAll;
+
+$('speakBtn').onclick=()=>{
+  const text=$('topResult').textContent.trim();
+  if(!text || text==='按住麥克風說話') return;
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang=LANG[state.target].speech;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+};
+
+$('swapBtn').onclick=()=>{
+  // 本版本固定下方輸入為繁中；交換只在三語言間輪替目標，避免把介面弄複雜。
+  const order=['th','en'];
+  const i=order.indexOf(state.target);
+  setTarget(order[(i+1)%order.length]);
+};
+
+$('settingsBtn').onclick=()=>{
+  $('apiKey').value=state.apiKey;
+  $('modal').classList.add('show');
+};
+$('cancelSettings').onclick=()=>$('modal').classList.remove('show');
+$('saveSettings').onclick=()=>{
+  state.apiKey=$('apiKey').value.trim();
+  if(state.apiKey)localStorage.setItem('googleTranslateApiKey',state.apiKey);
+  else localStorage.removeItem('googleTranslateApiKey');
+  $('modal').classList.remove('show');
+  setEngine(state.apiKey?'Google Cloud 優先；失敗時自動嘗試免費備援':'尚未設定 Google Key；目前會直接使用免費備援');
+};
+$('modal').addEventListener('click',e=>{if(e.target===$('modal'))$('modal').classList.remove('show')});
+
+if(document.documentElement.requestFullscreen){
+  // 不自動強制全螢幕；手機瀏覽器通常要求使用者手勢後才能進入。
+  document.addEventListener('dblclick',()=>document.documentElement.requestFullscreen().catch(()=>{}));
+}
+setEngine(state.apiKey?'Google Cloud 優先；失敗時自動嘗試免費備援':'尚未設定 Google Key；目前會直接使用免費備援');
 </script>
 </body>
 </html>
