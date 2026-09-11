@@ -1,6 +1,6 @@
 const CACHE_NAME = 'travel-translator-v1';
 const APP_SHELL = [
-  './travel_translator_zh_en_th_pwa.html',
+  './index.html',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png'
