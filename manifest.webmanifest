@@ -1,7 +1,7 @@
 {
   "name": "旅遊面對面翻譯器",
   "short_name": "旅遊翻譯器",
-  "start_url": "./travel_translator_zh_en_th_pwa.html",
+  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
